@@ -20,19 +20,23 @@ import json
 
 from SignTool import SignTools
 
+logging.basicConfig(
+    level = logging.INFO,
+    format = '[%(asctime)s] - [%(filename)s] [%(levelname)s] - %(message)s'
+    # datefmt = '%Y-%m-%d %A %H:%M:%S',
+    )
 
-logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 class ProxyHandler(tornado.web.RequestHandler):
-    SUPPORTED_METHODS = ['GET', 'POST', 'CONNECT']
+    SUPPORTED_METHODS = ['GET', 'PUT', 'POST', 'CONNECT']
 
     @tornado.web.asynchronous
     def get(self):
         logger.info('Handle %s request to %s', self.request.method, self.request.uri)
 
         def handle_response(response):
-            logger.info("start handle reponse, code is %s", response.code)
+            logger.info("reponse code is %s", response.code)
 
             #self.request.headers.get("X-Real-Ip",'')
             if (response.error and not
@@ -71,7 +75,8 @@ class ProxyHandler(tornado.web.RequestHandler):
         #     return
 
         #远程IP 白名单校验
-        # client_ip = self.request.remote_ip
+        client_ip = self.request.remote_ip
+        logger.info("remote ip is %s", client_ip)
         # if not match_white_iplist(client_ip):
         #     logger.debug('deny %s', client_ip)
         #     self.set_status(403)
@@ -97,8 +102,6 @@ class ProxyHandler(tornado.web.RequestHandler):
         sign_str = timestamp + user_agent_str + random_str
 
         sign_result = sign_tool.sign(sign_str)
-
-        print(timestamp)
 
         auth_token = self.request.headers.get("Authorization")
 
@@ -137,6 +140,10 @@ class ProxyHandler(tornado.web.RequestHandler):
 
     @tornado.web.asynchronous
     def post(self):
+        return self.get()
+
+    @tornado.web.asynchronous
+    def put(self):
         return self.get()
 
     @tornado.web.asynchronous
@@ -239,21 +246,8 @@ def shield_attack(header):
 
 
 def fetch_request(url, callback, **kwargs):
-    proxy = get_proxy(url)
-    logger.info("get_proxy is %s", proxy)
-
-    if proxy:
-        logger.debug('Forward request via upstream proxy %s', proxy)
-        tornado.httpclient.AsyncHTTPClient.configure(
-            'tornado.curl_httpclient.CurlAsyncHTTPClient')
-        host, port = parse_proxy(proxy)
-        kwargs['proxy_host'] = host
-        kwargs['proxy_port'] = port
-
     req = tornado.httpclient.HTTPRequest(url, **kwargs)
-    # req = tornado.httpclient.HTTPRequest(url)
     client = tornado.httpclient.AsyncHTTPClient()
-    # client.fetch(req, callback, follow_redirects=True, max_redirects=3)
     client.fetch(req, callback)
 
 
