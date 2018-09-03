@@ -22,6 +22,12 @@
 2. 增加对PUT的支持  
 原工程没有对`PUT`进行定制，现在增加了这一块的功能
 
+3. 增加对`Post`的支持
+
+4. 增加对`protobuf` 的支持
+在body里面，输入`json`，当`header`设置了`type`为`protibuf`时，  
+代理会自动把json转为protobuf序列化后的数据，发送到服务器
+
 
 
 **快速启动**
