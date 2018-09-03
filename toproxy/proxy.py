@@ -17,8 +17,14 @@ from tornado.httputil import HTTPHeaders
 
 import time
 import json
+import simplejson
+import pbjson
 
 from SignTool import SignTools
+
+import sys
+sys.path.append('./protobuf')
+import SkmrMain_pb2
 
 logging.basicConfig(
     level = logging.INFO,
@@ -35,10 +41,11 @@ class ProxyHandler(tornado.web.RequestHandler):
     def get(self):
         logger.info('Handle %s request to %s', self.request.method, self.request.uri)
 
+        isProtobuf = checkHeaderType(self.request.headers)
+
         def handle_response(response):
             logger.info("reponse code is %s", response.code)
 
-            #self.request.headers.get("X-Real-Ip",'')
             if (response.error and not
                     isinstance(response.error, tornado.httpclient.HTTPError)):
                 self.set_status(500)
@@ -54,80 +61,40 @@ class ProxyHandler(tornado.web.RequestHandler):
                     for i in v:
                         self.add_header('Set-Cookie', i)
                 self.add_header('VIA', 'Toproxy')
+
+                ## 处理响应体
                 if response.body:
-                    self.write(response.body)
+                    r_b = response.body
+
+                    if isProtobuf:
+                        response_body = SkmrMain_pb2.SkmrMsg()
+                        response_body.ParseFromString(r_b)
+                        self.write(str(response_body))
+                    else:
+                        self.write(response.body)
             self.finish()
-
-        # if base_auth_user:
-        #     auth_header = self.request.headers.get('Authorization', '')
-        #     if not base_auth_valid(auth_header):
-        #         self.set_status(403)
-        #         self.write('Auth Faild')
-        #         self.finish()
-        #         return
-
-        #客户端攻击检测
-        # user_agent = self.request.headers.get('User-Agent', '')
-        # if shield_attack(user_agent):
-        #     self.set_status(500)
-        #     self.write('nima')
-        #     self.finish()
-        #     return
 
         #远程IP 白名单校验
         client_ip = self.request.remote_ip
         logger.info("remote ip is %s", client_ip)
-        # if not match_white_iplist(client_ip):
-        #     logger.debug('deny %s', client_ip)
-        #     self.set_status(403)
-        #     self.write('')
-        #     self.finish()
-        #     return
 
-        global sign_tool
+        ## 处理URL
+        if self.request.uri:
+            logger.info("URL is %s", self.request.uri)
 
-        user_agent = {
-            "version": "2.3",
-            "appName": "kanfangriji"
-        }
+        ## 处理header
+        self.request.headers = generate_header(self.request.headers, isProtobuf)
 
-        user_agent_str = json.dumps(user_agent)
+        #处理body
+        body = handle_body(self.request.body, isProtobuf)
 
-        t = time.time()
-        timestamp = str(int(round(t * 1000)))
-        random_str = "asdf"
-
-        timestamp_str = "%s+%s" % (timestamp, random_str)
-
-        sign_str = timestamp + user_agent_str + random_str
-
-        sign_result = sign_tool.sign(sign_str)
-
-        auth_token = self.request.headers.get("Authorization")
-
-        self.request.headers = HTTPHeaders()
-
-        self.request.headers.add("Accept", "application/json;charset=UTF-8")
-        self.request.headers.add("Content-Type", "application/json;charset=UTF-8")
-        self.request.headers.add("nonce", "6906")
-        self.request.headers.add("User-Agent", user_agent_str)
-        self.request.headers.add("x-trace-id", "87c7d310-a1e6-11e8-9127-db5d4669379a")
-        self.request.headers.add("X-Token", "token-fsf359jtys")
-
-        self.request.headers.add("Timestamp", timestamp_str)
-        self.request.headers.add("Signature", sign_result)
-
-        if auth_token:
-            self.request.headers.add("Authorization", auth_token)
-
-        body = self.request.body
-        if not body:
-            body = None
         try:
             fetch_request(
                 self.request.uri, handle_response,
-                method=self.request.method, body=body,
-                headers=self.request.headers, follow_redirects=False,
+                method=self.request.method,
+                body=body,
+                headers=self.request.headers,
+                follow_redirects=False,
                 allow_nonstandard_methods=True)
         except tornado.httpclient.HTTPError as e:
             logger.error("get , have error %s", e)
@@ -224,6 +191,83 @@ def base_auth_valid(auth_header):
     else:
         return False
 
+def checkHeaderType(old_header):
+    '''检查header是否是protobuf'''
+    header_type = old_header.get("type")
+
+    #设置数据传输类型
+    if "protobuf" == header_type:
+        return True
+    else:
+        return False
+
+def generate_header(old_header, isProtobuf=True):
+    """生成签名后的headers"""
+
+    global sign_tool
+
+    user_agent = {
+        "version": "4.4",
+        "appName": "kanfangriji"
+    }
+
+    user_agent_str = json.dumps(user_agent)
+
+    t = time.time()
+    timestamp = str(int(round(t * 1000)))
+    random_str = "asdf"
+
+    timestamp_str = "%s+%s" % (timestamp, random_str)
+
+    sign_str = timestamp + user_agent_str + random_str
+
+    sign_result = sign_tool.sign(sign_str)
+    
+    new_header = HTTPHeaders()
+
+    new_header.add("nonce", "6906")
+    new_header.add("User-Agent", user_agent_str)
+    new_header.add("x-trace-id", "87c7d310-a1e6-11e8-9127-db5d4669379a")
+    new_header.add("X-Token", "token-fsf359jtys")
+
+    new_header.add("Timestamp", timestamp_str)
+    new_header.add("Signature", sign_result)
+
+    auth_token = old_header.get("Authorization")
+
+    #设置自定义token
+    if auth_token:
+        new_header.add("Authorization", auth_token)
+
+    #设置数据传输类型
+    if isProtobuf:
+        new_header.add("Accept", "application/x-protobuf")
+        new_header.add("Content-Type", "application/x-protobuf")
+    else:
+        new_header.add("Accept", "application/json;charset=UTF-8")
+        new_header.add("Content-Type", "application/json;charset=UTF-8")
+
+    return new_header
+
+def handle_body(body, isProtobuf=True):
+    """处理body"""
+    if not body:
+        body = None
+
+    print type(body)
+
+    if isProtobuf:
+        #转换json为protobuf
+        body_json = simplejson.loads(body)
+        print type(body_json)
+
+        logger.info("body is %s", str(body_json)) 
+
+        a1 = pbjson.dict2pb(SkmrMain_pb2.SkmrMsg, body_json)
+        logger.info("SkmrMsg is %s", str(a1))
+        body = a1.SerializeToString()
+
+    return body
 
 def parse_proxy(proxy):
     proxy_parsed = urlparse(proxy, scheme='http')
@@ -275,11 +319,11 @@ def run_proxy(port, pnum=1, start_ioloop=True):
 if __name__ == '__main__':
     import argparse
     white_iplist = []
-    parser = argparse.ArgumentParser(description='''python -m toproxy/proxy  -p 9999 -w 127.0.0.1,8.8.8.8 -u xiaorui:fengyun''')
+    parser = argparse.ArgumentParser(description='''python -m toproxy/proxy  -p 9999 -w 127.0.0.1,8.8.8.8 -d fiddler''')
 
     parser.add_argument('-p', '--port', help='tonado proxy listen port', action='store', default=9999)
     parser.add_argument('-w', '--white', help='white ip list ---> 127.0.0.1,215.8.1.3', action='store', default=[])
-    parser.add_argument('-u', '--user', help='Base Auth , xiaoming:123123', action='store', default=None)
+    parser.add_argument('-d', '--debug', help='Debug Type , fiddler', action='store', default=None)
 
     #线程数
     parser.add_argument('-f', '--fork', help='fork process to support', action='store', default=1)
@@ -291,10 +335,7 @@ if __name__ == '__main__':
     port = int(args.port)
     white_iplist = args.white
 
-    if args.user:
-        base_auth_user, base_auth_passwd = args.user.split(':')
-    else:
-        base_auth_user, base_auth_passwd = None, None
+    dbeug_type = args.debug
 
     print ("Starting HTTP proxy on port %d" % port)
 
