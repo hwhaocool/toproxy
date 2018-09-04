@@ -1,0 +1,8 @@
+{
+    "accept": {
+        "/v1/h5/*": "application/json",
+        "/v2/h5/*": "application/json",
+        "/v3/h5/*": "application/json",
+        ".*": "application/x-protobuf"
+    }
+}
