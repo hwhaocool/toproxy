@@ -21,6 +21,7 @@ import simplejson
 import pbjson
 
 from SignTool import SignTools
+from MyConfig import MyConfig
 
 import sys
 sys.path.append('./protobuf')
@@ -39,16 +40,20 @@ class ProxyHandler(tornado.web.RequestHandler):
 
     @tornado.web.asynchronous
     def get(self):
-        logger.info('Handle %s request to %s', self.request.method, self.request.uri)
+        current_method = self.request.method
+        logger.info('remote_ip is %s', self.request.remote_ip)
+        logger.info('Handle %s request to %s', current_method, self.request.uri)
 
         isProtobuf = checkHeaderType(self.request.headers)
+        isH5= checkH5(self.request)
+        logger.info("isProtobuf is %s, isH5 is %s", isProtobuf, isH5)
 
         def handle_response(response):
             logger.info("reponse code is %s", response.code)
 
             if (response.error and not
                     isinstance(response.error, tornado.httpclient.HTTPError)):
-                self.set_status(500)
+                self.set_status(502)
                 self.write('Internal server error:\n' + str(response.error))
             else:
                 self.set_status(response.code)
@@ -67,26 +72,35 @@ class ProxyHandler(tornado.web.RequestHandler):
                     r_b = response.body
 
                     if isProtobuf:
-                        response_body = SkmrMain_pb2.SkmrMsg()
-                        response_body.ParseFromString(r_b)
-                        self.write(str(response_body))
+                        if isH5:
+                            f2 = open("temp.log", "w")
+                            f2.write(r_b)
+                            f2.close()
+                            response_body = SkmrMain_pb2.SkmrRsp()
+                            response_body.ParseFromString(r_b)
+                            self.write(str(response_body))
+                        else:
+                            response_body = SkmrMain_pb2.SkmrMsg()
+                            response_body.ParseFromString(r_b)
+                            self.write(str(response_body))
                     else:
                         self.write(response.body)
             self.finish()
 
         #远程IP 白名单校验
         client_ip = self.request.remote_ip
-        logger.info("remote ip is %s", client_ip)
-
-        ## 处理URL
-        if self.request.uri:
-            logger.info("URL is %s", self.request.uri)
 
         ## 处理header
-        self.request.headers = generate_header(self.request.headers, isProtobuf)
+        global sign_tool
+        self.request.headers = sign_tool.generate_header(self.request.headers, isProtobuf, self.request)
 
         #处理body
-        body = handle_body(self.request.body, isProtobuf)
+        if "GET" == current_method:
+            body = self.request.body
+            print type(body)
+            print body
+        else:
+            body = handle_body(self.request.body, isProtobuf)
 
         try:
             fetch_request(
@@ -101,7 +115,7 @@ class ProxyHandler(tornado.web.RequestHandler):
             if hasattr(e, 'response') and e.response:
                 handle_response(e.response)
             else:
-                self.set_status(500)
+                self.set_status(501)
                 self.write('Internal server error:\n' + str(e))
                 self.finish()
 
@@ -201,58 +215,31 @@ def checkHeaderType(old_header):
     else:
         return False
 
-def generate_header(old_header, isProtobuf=True):
-    """生成签名后的headers"""
-
-    global sign_tool
-
-    user_agent = {
-        "version": "4.4",
-        "appName": "kanfangriji"
-    }
-
-    user_agent_str = json.dumps(user_agent)
-
-    t = time.time()
-    timestamp = str(int(round(t * 1000)))
-    random_str = "asdf"
-
-    timestamp_str = "%s+%s" % (timestamp, random_str)
-
-    sign_str = timestamp + user_agent_str + random_str
-
-    sign_result = sign_tool.sign(sign_str)
-    
-    new_header = HTTPHeaders()
-
-    new_header.add("nonce", "6906")
-    new_header.add("User-Agent", user_agent_str)
-    new_header.add("x-trace-id", "87c7d310-a1e6-11e8-9127-db5d4669379a")
-    new_header.add("X-Token", "token-fsf359jtys")
-
-    new_header.add("Timestamp", timestamp_str)
-    new_header.add("Signature", sign_result)
-
-    auth_token = old_header.get("Authorization")
-
-    #设置自定义token
-    if auth_token:
-        new_header.add("Authorization", auth_token)
-
-    #设置数据传输类型
-    if isProtobuf:
-        new_header.add("Accept", "application/x-protobuf")
-        new_header.add("Content-Type", "application/x-protobuf")
+def checkH5(current_request):
+    '''检查url是否是H5'''
+    c_path = current_request.path
+    if re.search("h5", c_path):
+        return True
     else:
-        new_header.add("Accept", "application/json;charset=UTF-8")
-        new_header.add("Content-Type", "application/json;charset=UTF-8")
+        return False
 
-    return new_header
+def handle_accept(current_request=None):
+    """处理C端 accept"""
+    url_prefix = "http://" + current_request.host
+    c_path = current_request.path
+
+    #类似 /v1/h5/house/info
+    url_suffix = c_path.replace(url_prefix, "")
+    
+    a = my_config.getAccept(url_suffix)
+    logger.info("Accept is %s", a)
+    return a
 
 def handle_body(body, isProtobuf=True):
     """处理body"""
     if not body:
         body = None
+        return body
 
     print type(body)
 
@@ -339,8 +326,10 @@ if __name__ == '__main__':
 
     print ("Starting HTTP proxy on port %d" % port)
 
-    global sign_tool
+    # global sign_tool
     sign_tool = SignTools()
+
+    my_config = MyConfig()
 
     pnum = int(args.fork)
     run_proxy(port, pnum)
