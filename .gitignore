@@ -3,3 +3,4 @@
 /dist/
 /doc/_build/
 *.pyc
+toproxy/SignTool.py
